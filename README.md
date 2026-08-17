@@ -1,4 +1,4 @@
-# Smart Network Monitoring Dashboard
+# Network Monitoring Dashboard
 
 A full-stack academic network-monitoring project that makes network performance and statistical analysis visible in one responsive operations console. **Live Mode** uses real Windows ICMP checks for latency, packet loss, and reachability, and reads this computer's adapter traffic rate. **Simulation Mode** remains available for presentations without a lab network.
 
