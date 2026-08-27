@@ -109,7 +109,18 @@ app.put('/api/settings', async (req, res, next) => {
   } catch (e) { next(e) }
 });
 
-app.use((err:unknown,_req:express.Request,res:express.Response,_next:express.NextFunction)=>{const e=err as {status?:number;message?:string;issues?:unknown};console.error(err);res.status(e.status||400).json({message:e.message||'Invalid request',issues:e.issues})});
+import { ZodError } from 'zod';
+
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err instanceof ZodError) {
+    const message = err.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ');
+    res.status(400).json({ message: message || 'Validation failed', issues: err.issues });
+    return;
+  }
+  const e = err as { status?: number; message?: string; issues?: unknown };
+  console.error(err);
+  res.status(e.status || 400).json({ message: e.message || 'Invalid request', issues: e.issues });
+});
 
 settingsService.loadSettings().then(() => {
   simulationMode = settingsService.getSettings().operatingMode === 'simulation';
