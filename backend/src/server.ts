@@ -8,11 +8,12 @@ import { SimulationService } from './services/simulation.js'
 import { LiveMonitoringService } from './services/live.js'
 import { speedTestService } from './services/speedtest.js'
 import { pearson, statistics } from './services/statistics.js'
+import { settingsService } from './services/settings.js'
 
 const app = express()
 const port = Number(process.env.PORT || 4000)
-const simulationMode = process.env.SIMULATION_MODE === 'true'
-const monitor = simulationMode ? new SimulationService() : new LiveMonitoringService()
+let simulationMode = process.env.SIMULATION_MODE === 'true'
+let monitor: SimulationService | LiveMonitoringService = simulationMode ? new SimulationService() : new LiveMonitoringService()
 const secret = process.env.JWT_SECRET || 'development-only-change-me'
 
 app.use(cors({ origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173' }))
@@ -82,5 +83,38 @@ app.get('/api/alerts',(_req,res)=>res.json(monitor.alerts));
 app.put('/api/alerts/:id/:action',(req,res,next)=>{try{const action=z.enum(['acknowledge','resolve']).parse(req.params.action);res.json(monitor.updateAlert(+req.params.id,action==='acknowledge'?'acknowledged':'resolved'))}catch(e){next(e)}})
 app.post('/api/simulation/run',async(_req,res,next)=>{try{await monitor.runScenario();res.json(dashboard())}catch(e){next(e)}});
 app.get('/api/reports/:period',(req,res)=>{const data=dashboard();const daily={title:`${req.params.period==='weekly'?'Weekly':'Daily'} network report`,generatedAt:data.generatedAt,networkAvailability:`${data.kpis.availability.value}%`,averageLatency:`${data.kpis.averageLatency.value} ms`,packetLoss:`${data.kpis.packetLoss.value}%`,averageDownload:`${data.kpis.download.value} Mbps`,activeAlerts:data.alerts.filter(a=>a.status==='active').length,topProblematicDevices:data.problematic.slice(0,3).map(x=>`${x.device.name} (${x.score})`).join(', ')};res.json({report:daily})});
+
+app.get('/api/settings', (req, res) => res.json(settingsService.getSettings()));
+app.put('/api/settings', async (req, res, next) => {
+  try {
+    const body = z.object({
+      checkIntervalSeconds: z.number().int().min(5).max(3600),
+      dashboardRefreshMode: z.string(),
+      latencyThresholdMs: z.number().int().min(1).max(5000),
+      displayName: z.string().min(1).max(100),
+      email: z.string().email(),
+      operatingMode: z.enum(['live', 'simulation'])
+    }).parse(req.body);
+    
+    const oldMode = settingsService.getSettings().operatingMode;
+    await settingsService.saveSettings(body);
+    
+    if (oldMode !== body.operatingMode) {
+      simulationMode = body.operatingMode === 'simulation';
+      monitor = simulationMode ? new SimulationService() : new LiveMonitoringService();
+      void monitor.tick();
+    }
+    
+    res.json(settingsService.getSettings());
+  } catch (e) { next(e) }
+});
+
 app.use((err:unknown,_req:express.Request,res:express.Response,_next:express.NextFunction)=>{const e=err as {status?:number;message?:string;issues?:unknown};console.error(err);res.status(e.status||400).json({message:e.message||'Invalid request',issues:e.issues})});
-void monitor.tick(); setInterval(()=>void monitor.tick(),Number(process.env.MONITORING_INTERVAL_SECONDS||30)*1000);app.listen(port,()=>console.log(`Monitoring API listening on http://localhost:${port} (${simulationMode?'simulation':'live'} mode)`));
+
+settingsService.loadSettings().then(() => {
+  simulationMode = settingsService.getSettings().operatingMode === 'simulation';
+  monitor = simulationMode ? new SimulationService() : new LiveMonitoringService();
+  void monitor.tick(); 
+  setInterval(() => void monitor.tick(), settingsService.getSettings().checkIntervalSeconds * 1000);
+  app.listen(port, () => console.log(`Monitoring API listening on http://localhost:${port}`));
+});

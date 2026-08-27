@@ -1,13 +1,16 @@
 export class SpeedTestService {
   private lastResult: { downloadMbps: number; uploadMbps: number; timestamp: string } | null = null;
   private isRunning = false;
+  private intervalTimer: NodeJS.Timeout | null = null;
 
   constructor() {
-    // Run the first test shortly after startup
     setTimeout(() => this.runTest(), 5000);
-    
-    // Run periodically every 30 minutes
-    setInterval(() => this.runTest(), 30 * 60 * 1000);
+    this.startInterval(30 * 60 * 1000);
+  }
+
+  startInterval(ms: number) {
+    if (this.intervalTimer) clearInterval(this.intervalTimer);
+    this.intervalTimer = setInterval(() => this.runTest(), ms);
   }
 
   async runTest() {
@@ -16,7 +19,6 @@ export class SpeedTestService {
     try {
       console.log('Running internet speed test (this takes a few seconds)...');
       
-      // Download 25MB from Cloudflare edge
       const dlBytes = 25000000;
       const dlStart = performance.now();
       const dlRes = await fetch(`https://speed.cloudflare.com/__down?bytes=${dlBytes}`);
@@ -25,7 +27,6 @@ export class SpeedTestService {
       const dlDurationSec = (dlEnd - dlStart) / 1000;
       const downloadMbps = (dlBytes * 8 / 1000000) / dlDurationSec;
 
-      // Upload 5MB to Cloudflare edge
       const ulBytes = 5000000;
       const payload = new Uint8Array(ulBytes);
       const ulStart = performance.now();

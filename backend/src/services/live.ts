@@ -22,19 +22,25 @@ async function localTraffic(): Promise<{ downloadMbps: number; uploadMbps: numbe
   // Windows exposes instantaneous interface byte rates through this performance class.
   const command = "$a=Get-CimInstance Win32_PerfFormattedData_Tcpip_NetworkInterface | Where-Object {$_.Name -notmatch 'Loopback|Teredo|isatap'}; @{received=(($a | Measure-Object BytesReceivedPersec -Sum).Sum);sent=(($a | Measure-Object BytesSentPersec -Sum).Sum)} | ConvertTo-Json -Compress"
   try {
-    const raw = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], 6000)
+    const raw = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], 15000)
     const rates = JSON.parse(raw) as { received?: number; sent?: number }
     return { downloadMbps: round(((rates.received || 0) * 8) / 1_000_000), uploadMbps: round(((rates.sent || 0) * 8) / 1_000_000) }
   } catch { return { downloadMbps: 0, uploadMbps: 0 } }
 }
 
-async function physicalNetworkOnline(): Promise<boolean> {
-  try {
-    const raw = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "@(Get-NetAdapter | Where-Object {$_.Status -eq 'Up' -and $_.HardwareInterface -eq $true}).Count"], 4000)
-    return Number.parseInt(raw.trim(), 10) > 0
-  } catch { return false }
-}
+import os from 'node:os'
 
+async function physicalNetworkOnline(): Promise<boolean> {
+  const interfaces = os.networkInterfaces()
+  for (const name of Object.keys(interfaces)) {
+    if (name.toLowerCase().includes('loopback') || name.toLowerCase().includes('pseudo')) continue
+    const addresses = interfaces[name]
+    if (addresses && addresses.some(iface => !iface.internal && iface.family === 'IPv4')) {
+      return true
+    }
+  }
+  return false
+}
 const isLoopback = (address: string) => address === 'localhost' || address === '::1' || /^127\./.test(address)
 
 async function probe(address: string): Promise<{ status: Status; metric: Metric }> {

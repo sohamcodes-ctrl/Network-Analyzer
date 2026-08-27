@@ -1,0 +1,8 @@
+{
+  "checkIntervalSeconds": 45,
+  "dashboardRefreshMode": "Every 10 seconds",
+  "latencyThresholdMs": 100,
+  "displayName": "Test Admin",
+  "email": "test@example.com",
+  "operatingMode": "live"
+}

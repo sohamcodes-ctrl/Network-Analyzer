@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Activity, Bell, ChevronRight, CircleAlert, Gauge, Laptop, Moon, Network, Play, Plus, Radio, Search, Server, Sun, Wifi } from 'lucide-react'
+import { Activity, Bell, ChevronRight, CircleAlert, Gauge, Laptop, Moon, Network, Play, Plus, Radio, Search, Server, Settings, Sun, User, Wifi } from 'lucide-react'
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { api } from './api'
 import type { Alert, Dashboard, Device, Metric, Statistics } from './types'
@@ -68,5 +68,130 @@ function AnalyticsPage({ devices }: { devices: Device[] }) { const [deviceId,set
 function AlertsPage({ alerts, refresh }: { alerts: Alert[]; refresh: () => void }) { const update=async(id:number, action:'acknowledge'|'resolve')=>{await api.updateAlert(id,action);refresh()}; return <><section className="page-heading"><div><p className="eyebrow">Rules-based & statistical events</p><h1>Alerts</h1><p>Thresholds and detected anomalies from recent monitoring.</p></div></section><AlertsPreview alerts={alerts} onUpdate={update}/></> }
 function ReportsPage() { const [report,setReport]=useState<Record<string,unknown>|null>(null); const generate=async(period:'daily'|'weekly')=>setReport((await api.report(period)).report); return <><section className="page-heading"><div><p className="eyebrow">Shareable summaries</p><h1>Reports</h1><p>Generate dynamic monitoring summaries from stored measurements.</p></div><div className="filters"><button className="primary" onClick={()=>generate('daily')}>Generate daily</button><button className="secondary" onClick={()=>generate('weekly')}>Generate weekly</button></div></section>{report&&<article className="panel report"><h2>{String(report.title)}</h2><p>Generated {String(report.generatedAt)}</p><dl>{Object.entries(report).filter(([k])=>!['title','generatedAt'].includes(k)).map(([k,v])=><div key={k}><dt>{pretty(k)}</dt><dd>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</dd></div>)}</dl><button className="secondary" onClick={()=>window.print()}>Print report</button></article>}</> }
 
-function App() { const [data,setData]=useState<Dashboard|null>(null); const [page,setPage]=useState('Dashboard'); const [dark,setDark]=useState(true); const [error,setError]=useState(''); const load=async()=>{try{setData(await api.dashboard());setError('')}catch(e){setError(e instanceof Error ? e.message:'Could not reach the monitoring API')}}; useEffect(()=>{load();const timer=setInterval(load,10000);return()=>clearInterval(timer)},[]); const nav=['Dashboard','Devices','Analytics','Alerts','Reports','Settings']; const content=useMemo(()=>{if(!data)return <div className="loading">Loading backend monitoring data…</div>; if(page==='Dashboard')return <DashboardPage data={data} onScenario={async()=>{await api.scenario();load()}}/>; if(page==='Devices')return <DevicesPage devices={data.devices} refresh={load}/>; if(page==='Analytics')return <AnalyticsPage devices={data.devices}/>; if(page==='Alerts')return <AlertsPage alerts={data.alerts} refresh={load}/>; if(page==='Reports')return <ReportsPage/>; return <section className="empty"><Gauge size={40}/><h1>Settings</h1><p>Alert thresholds are exposed from the backend configuration in the next iteration.</p></section>},[data,page]); return <div className={dark?'app dark':'app'}><aside><div className="brand"><span><Network size={21}/></span><div>Smart Network<small>MONITORING CONSOLE</small></div></div><nav>{nav.map(item=><button className={page===item?'active':''} onClick={()=>setPage(item)} key={item}>{item==='Dashboard'?<Gauge/>:item==='Devices'?<Server/>:item==='Analytics'?<Activity/>:item==='Alerts'?<Bell/>:<Radio/>}{item}</button>)}</nav><div className="side-bottom"><div className="mode"><i/> {data?.mode === 'live' ? 'LIVE MONITORING' : 'SIMULATION MODE'}</div><div className="operator"><span>AJ</span><div><b>Admin User</b><small>Administrator</small></div></div></div></aside><main><header><div className="search"><Search size={17}/><input placeholder="Search devices, alerts or IP address"/></div><div className="header-actions"><span className="live"><i/> System operational</span><button className="icon-button" onClick={()=>setDark(!dark)}>{dark?<Sun size={18}/>:<Moon size={18}/>}</button><button className="icon-button"><Bell size={18}/>{data&&data.alerts.filter(a=>a.status==='active').length>0&&<em/>}</button></div></header>{error?<div className="error"><CircleAlert size={17}/>{error}<button onClick={load}>Retry</button></div>:<div className="content">{content}</div>}</main></div> }
+function SettingsPage({ data, refresh }: { data: Dashboard; refresh: () => void }) {
+  const [activeTab, setActiveTab] = useState('monitoring');
+  const [settings, setSettings] = useState<import('./api').AppSettings | null>(null);
+  
+  useEffect(() => {
+    api.getSettings().then(setSettings).catch(console.error);
+  }, []);
+
+  const save = async (updates: Partial<import('./api').AppSettings>) => {
+    if (!settings) return;
+    try {
+      const updated = await api.updateSettings({ ...settings, ...updates });
+      setSettings(updated);
+      refresh();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Failed to save settings');
+    }
+  };
+
+  if (!settings) return <div className="loading">Loading settings...</div>;
+  
+  const tabs = [
+    { id: 'monitoring', label: 'Monitoring Configuration', icon: Radio },
+    { id: 'profile', label: 'User Profile & API', icon: User },
+    { id: 'advanced', label: 'Advanced System', icon: Settings },
+  ];
+
+  return <>
+    <section className="page-heading">
+      <div><p className="eyebrow">System Preferences</p><h1>Settings</h1><p>Manage application preferences, API keys, and monitoring targets.</p></div>
+    </section>
+    
+    <div className="settings-layout" style={{ display: 'flex', gap: '2rem', marginTop: '1rem', alignItems: 'flex-start' }}>
+      <aside className="panel" style={{ width: '260px', flexShrink: 0, padding: '1rem' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          {tabs.map(tab => (
+            <button 
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={activeTab === tab.id ? 'primary' : 'ghost'}
+              style={{ justifyContent: 'flex-start', padding: '0.75rem 1rem', width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: '0.75rem', borderRadius: '8px' }}
+            >
+              <tab.icon size={18} /> {tab.label}
+            </button>
+          ))}
+        </div>
+      </aside>
+      <div style={{ flexGrow: 1, display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+        {activeTab === 'monitoring' && (
+           <article className="panel">
+             <div className="panel-title"><div><h2>Monitoring Configuration</h2><p>Set how often devices are probed and default targets.</p></div></div>
+             <form onSubmit={(e) => { e.preventDefault(); const formData = new FormData(e.currentTarget); save({ checkIntervalSeconds: Number(formData.get('interval')), dashboardRefreshMode: String(formData.get('refresh')), latencyThresholdMs: Number(formData.get('latency')) }) }} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', marginTop: '1rem' }}>
+               <label className="settings-label" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                 <b>Default Check Interval (Seconds)</b>
+                 <input type="number" name="interval" defaultValue={settings.checkIntervalSeconds} style={{ padding: '0.75rem', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', borderRadius: '6px', color: 'inherit' }} />
+               </label>
+               <label className="settings-label" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                 <b>Global Auto-Refresh (Dashboard)</b>
+                 <select name="refresh" defaultValue={settings.dashboardRefreshMode} style={{ padding: '0.75rem', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', borderRadius: '6px', color: 'inherit' }}>
+                   <option>Every 10 seconds</option>
+                   <option>Every 30 seconds</option>
+                   <option>Every 1 minute</option>
+                   <option>Never (Manual)</option>
+                 </select>
+               </label>
+               <label className="settings-label" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                 <b>Alert Threshold: High Latency (ms)</b>
+                 <input type="number" name="latency" defaultValue={settings.latencyThresholdMs} style={{ padding: '0.75rem', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', borderRadius: '6px', color: 'inherit' }} />
+               </label>
+               <button className="primary" style={{ alignSelf: 'flex-start', marginTop: '1rem' }}>Save Configuration</button>
+             </form>
+           </article>
+        )}
+        {activeTab === 'profile' && (
+           <article className="panel">
+             <div className="panel-title"><div><h2>User Profile & API Keys</h2><p>Manage your account and developer API keys.</p></div></div>
+             <form onSubmit={(e) => { e.preventDefault(); const formData = new FormData(e.currentTarget); save({ displayName: String(formData.get('name')), email: String(formData.get('email')) }) }} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', marginTop: '1rem' }}>
+               <label className="settings-label" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                 <b>Display Name</b>
+                 <input type="text" name="name" defaultValue={settings.displayName} style={{ padding: '0.75rem', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', borderRadius: '6px', color: 'inherit' }} />
+               </label>
+               <label className="settings-label" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                 <b>Email Address</b>
+                 <input type="email" name="email" defaultValue={settings.email} style={{ padding: '0.75rem', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', borderRadius: '6px', color: 'inherit' }} />
+               </label>
+               <button className="primary" style={{ alignSelf: 'flex-start', marginTop: '0.5rem' }}>Save Profile</button>
+             </form>
+               
+             <div style={{ marginTop: '2rem', paddingTop: '1.5rem', borderTop: '1px solid var(--border)' }}>
+                 <h3>Developer API Keys</h3>
+                 <p className="panel-copy" style={{ marginBottom: '1rem', marginTop: '0.25rem' }}>Use these keys to authenticate with the API programmatically.</p>
+                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                   <input type="password" value="sk_live_948a9b..." readOnly style={{ flexGrow: 1, padding: '0.75rem', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border)', borderRadius: '6px', color: '#8e99b5' }} />
+                   <button className="secondary">Copy</button>
+                   <button className="ghost">Revoke</button>
+                 </div>
+                 <button className="secondary" style={{ marginTop: '1rem' }}>Generate New Key</button>
+             </div>
+           </article>
+        )}
+        {activeTab === 'advanced' && (
+           <article className="panel">
+             <div className="panel-title"><div><h2>Advanced System Settings</h2><p>System-wide overrides and maintenance tools.</p></div></div>
+             <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem', marginTop: '1rem' }}>
+               <div>
+                 <h3 style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>Current Operating Mode <Badge status={settings.operatingMode === 'live' ? 'online' : 'warning'} /></h3>
+                 <p className="panel-copy" style={{ marginTop: '0.5rem' }}>Simulation mode generates fake metrics without sending real network traffic.</p>
+                 <button className="secondary" style={{ marginTop: '1rem' }} onClick={() => save({ operatingMode: settings.operatingMode === 'live' ? 'simulation' : 'live' })}>{settings.operatingMode === 'live' ? 'Switch to Simulation Mode' : 'Switch to Live Monitoring'}</button>
+               </div>
+               <div style={{ paddingTop: '1.5rem', borderTop: '1px solid var(--border)' }}>
+                 <h3 style={{ color: '#fb7185' }}>Danger Zone</h3>
+                 <p className="panel-copy" style={{ marginTop: '0.5rem' }}>Actions here cannot be undone. Proceed with caution.</p>
+                 <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
+                   <button className="secondary" style={{ borderColor: '#fb7185', color: '#fb7185' }}>Clear Monitoring History</button>
+                   <button className="secondary" style={{ borderColor: '#fb7185', color: '#fb7185' }}>Factory Reset</button>
+                 </div>
+               </div>
+             </div>
+           </article>
+        )}
+      </div>
+    </div>
+  </>
+}
+
+function App() { const [data,setData]=useState<Dashboard|null>(null); const [page,setPage]=useState('Dashboard'); const [dark,setDark]=useState(true); const [error,setError]=useState(''); const load=async()=>{try{setData(await api.dashboard());setError('')}catch(e){setError(e instanceof Error ? e.message:'Could not reach the monitoring API')}}; useEffect(()=>{load();const timer=setInterval(load,10000);return()=>clearInterval(timer)},[]); const nav=['Dashboard','Devices','Analytics','Alerts','Reports','Settings']; const content=useMemo(()=>{if(!data)return <div className="loading">Loading backend monitoring data…</div>; if(page==='Dashboard')return <DashboardPage data={data} onScenario={async()=>{await api.scenario();load()}}/>; if(page==='Devices')return <DevicesPage devices={data.devices} refresh={load}/>; if(page==='Analytics')return <AnalyticsPage devices={data.devices}/>; if(page==='Alerts')return <AlertsPage alerts={data.alerts} refresh={load}/>; if(page==='Reports')return <ReportsPage/>; return <SettingsPage data={data} refresh={load} />},[data,page]); return <div className={dark?'app dark':'app'}><aside><div className="brand"><span><Network size={21}/></span><div>Smart Network<small>MONITORING CONSOLE</small></div></div><nav>{nav.map(item=><button className={page===item?'active':''} onClick={()=>setPage(item)} key={item}>{item==='Dashboard'?<Gauge/>:item==='Devices'?<Server/>:item==='Analytics'?<Activity/>:item==='Alerts'?<Bell/>:<Radio/>}{item}</button>)}</nav><div className="side-bottom"><div className="mode"><i/> {data?.mode === 'live' ? 'LIVE MONITORING' : 'SIMULATION MODE'}</div><div className="operator"><span>AJ</span><div><b>Admin User</b><small>Administrator</small></div></div></div></aside><main><header><div className="search"><Search size={17}/><input placeholder="Search devices, alerts or IP address"/></div><div className="header-actions"><span className="live"><i/> System operational</span><button className="icon-button" onClick={()=>setDark(!dark)}>{dark?<Sun size={18}/>:<Moon size={18}/>}</button><button className="icon-button"><Bell size={18}/>{data&&data.alerts.filter(a=>a.status==='active').length>0&&<em/>}</button></div></header>{error?<div className="error"><CircleAlert size={17}/>{error}<button onClick={load}>Retry</button></div>:<div className="content">{content}</div>}</main></div> }
 createRoot(document.getElementById('root')!).render(<App />)
