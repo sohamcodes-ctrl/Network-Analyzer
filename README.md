@@ -54,6 +54,10 @@ In Simulation Mode, use **Run network simulation** repeatedly to move the design
 
 `LiveMonitoringService.check()` now performs Windows ICMP probes. Download/upload figures are the aggregate rate of the computer running the server—not its maximum internet-plan speed or per-device consumption. They will be near zero while the machine is idle and rise while you stream or download. Per-device traffic requires SNMP counters from managed switches/routers or an installed monitoring agent. Persist checks to `network_metrics` with parameterized mysql2 queries before production use.
 
+## Windows hotspot client traffic
+
+When Windows Mobile Hotspot is enabled, the **Hotspot client traffic** panel identifies clients on `HOTSPOT_SUBNET` (by default `192.168.137.0/24`) and calculates their own download and upload rates from captured packet bytes. It requires Npcap and Wireshark's `tshark.exe`. Set `TSHARK_PATH` if Wireshark is installed elsewhere. The collector does not synthesize client traffic or alter a device's ping-based status.
+
 ## Future scope
 
 Database repository integration, protected frontend routes, role-enforcement middleware, CSV export, websocket delivery, configurable rules UI, and a topology graph adapter are natural next steps.

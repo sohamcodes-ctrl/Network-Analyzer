@@ -1,7 +1,7 @@
 
 
 
-import type { Alert, Dashboard, Device, Metric, Statistics } from './types'
+import type { Alert, Dashboard, Device, HotspotSnapshot, Metric, Statistics } from './types'
 
 export interface AppSettings {
   checkIntervalSeconds: number;
@@ -19,6 +19,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 export const api = {
   dashboard: () => request<Dashboard>('/dashboard'),
+  hotspotClients: () => request<HotspotSnapshot>('/hotspot/clients'),
   devices: () => request<Device[]>('/devices'),
   addDevice: (body: Partial<Device>) => request<Device>('/devices', { method: 'POST', body: JSON.stringify(body) }),
   metrics: (id: number) => request<Metric[]>(`/monitoring/${id}`),

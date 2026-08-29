@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import type { Alert, Device, Metric, Status } from '../types.js'
-import { HotspotDetectionService, type HotspotClient } from './hotspot.js'
+import { HotspotTrafficService, type HotspotClient, type HotspotSnapshot } from './hotspot.js'
 
 const now = () => new Date().toISOString()
 const round = (value: number, digits = 2) => +value.toFixed(digits)
@@ -63,7 +63,7 @@ async function probe(address: string): Promise<{ status: Status; metric: Metric 
 
 export class LiveMonitoringService {
   devices: Device[] = []; metrics = new Map<number, Metric[]>(); alerts: Alert[] = []; private alertId = 1
-  private hotspotDetector = new HotspotDetectionService()
+  private hotspotTraffic = new HotspotTrafficService()
   private hotspotClients: HotspotClient[] = []
   constructor() {
     const targets = (process.env.MONITORED_TARGETS || '127.0.0.1').split(',').map(value => value.trim()).filter(value => addressPattern.test(value))
@@ -81,26 +81,22 @@ export class LiveMonitoringService {
   }
   async check(id: number) {
     const device = this.getDevice(id); const result = await probe(device.address)
-    const isHotspotClient = this.hotspotClients.some(c => c.ip === device.address)
-    // Completely override ping results for hotspot clients as mobile device pings are highly unreliable
-    if (isHotspotClient) {
-      result.status = 'online'
-      result.metric.availabilityPercent = 100
-      result.metric.packetLossPercent = 0
-      result.metric.errorCount = 0
-      result.metric.latencyMs = 5
-      result.metric.responseTimeMs = 5
+    const hotspotClient = this.hotspotClients.find(client => client.ip === device.address)
+    if (hotspotClient) {
+      result.metric.downloadMbps = hotspotClient.downloadMbps
+      result.metric.uploadMbps = hotspotClient.uploadMbps
     }
     device.status = result.status; device.latest = result.metric; device.lastChecked = result.metric.timestamp
     const records = this.metrics.get(id) || []; records.push(result.metric); this.metrics.set(id, records.slice(-2016))
     this.evaluate(device, result.metric); return result.metric
   }
   async tick() {
-    this.hotspotClients = await this.hotspotDetector.getConnectedClients()
+    const hotspot = await this.hotspotTraffic.snapshot()
+    this.hotspotClients = hotspot.clients
     for (const client of this.hotspotClients) {
       if (!this.devices.some(d => d.address === client.ip)) {
         try {
-          this.addDevice({ name: `Hotspot Device (${client.mac})`, address: client.ip, type: 'Mobile Device', location: client.interface })
+          this.addDevice({ name: `Hotspot Device (${client.mac})`, address: client.ip, type: 'Computer', location: client.interface })
         } catch (e) {
           console.error('Error adding hotspot device:', e)
         }
@@ -111,15 +107,19 @@ export class LiveMonitoringService {
   async refreshTraffic() {
     const traffic = await localTraffic()
     const networkOnline = await physicalNetworkOnline()
+    const hotspot = await this.hotspotTraffic.snapshot()
+    this.hotspotClients = hotspot.clients
     for (const device of this.devices) {
+      const hotspotClient = this.hotspotClients.find(client => client.ip === device.address)
       if (!networkOnline) device.status = 'offline'
-      const metric = { ...device.latest, timestamp: now(), latencyMs: networkOnline ? device.latest.latencyMs : 0, packetLossPercent: networkOnline ? device.latest.packetLossPercent : 100, availabilityPercent: networkOnline ? device.latest.availabilityPercent : 0, errorCount: networkOnline ? device.latest.errorCount : 4, downloadMbps: traffic.downloadMbps, uploadMbps: traffic.uploadMbps }
+      const metric = { ...device.latest, timestamp: now(), latencyMs: networkOnline ? device.latest.latencyMs : 0, packetLossPercent: networkOnline ? device.latest.packetLossPercent : 100, availabilityPercent: networkOnline ? device.latest.availabilityPercent : 0, errorCount: networkOnline ? device.latest.errorCount : 4, downloadMbps: hotspotClient ? hotspotClient.downloadMbps : traffic.downloadMbps, uploadMbps: hotspotClient ? hotspotClient.uploadMbps : traffic.uploadMbps }
       device.latest = metric; device.lastChecked = metric.timestamp
       const records = this.metrics.get(device.id) || []
       records.push(metric); this.metrics.set(device.id, records.slice(-2016))
     }
   }
   async runScenario() { await this.tick(); return 0 }
+  async getHotspotSnapshot(): Promise<HotspotSnapshot> { const snapshot = await this.hotspotTraffic.snapshot(); this.hotspotClients = snapshot.clients; return snapshot }
   updateAlert(id: number, status: 'acknowledged' | 'resolved') { const alert = this.alerts.find(item => item.id === id); if (!alert) throw Object.assign(new Error('Alert not found'), { status: 404 }); alert.status = status; return alert }
   private evaluate(device: Device, metric: Metric) {
     const checks: [string, number, number, string][] = [['latencyMs', metric.latencyMs, 100, 'High latency'], ['packetLossPercent', metric.packetLossPercent, 3, 'High packet loss']]

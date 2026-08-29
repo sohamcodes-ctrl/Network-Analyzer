@@ -3,8 +3,9 @@ import { createRoot } from 'react-dom/client'
 import { Activity, Bell, ChevronRight, CircleAlert, Gauge, Laptop, Moon, Network, Play, Plus, Radio, Search, Server, Settings, Sun, User, Wifi } from 'lucide-react'
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { api } from './api'
-import type { Alert, Dashboard, Device, Metric, Statistics } from './types'
+import type { Alert, Dashboard, Device, HotspotSnapshot, Metric, Statistics } from './types'
 import './styles.css'
+import './hotspot.css'
 
 const fmt = (value: number, digits = 1) =>
   new Intl.NumberFormat('en-US', { maximumFractionDigits: digits }).format(value)
@@ -51,10 +52,18 @@ function DashboardPage({ data, onScenario }: { data: Dashboard; onScenario: () =
       <article className="panel distribution"><div className="panel-title"><div><h2>Device status</h2><p>Current reachability</p></div></div><div className="donut"><ResponsiveContainer width="100%" height={185}><PieChart><Pie data={pie} dataKey="value" innerRadius={52} outerRadius={72} paddingAngle={4}>{pie.map(p => <Cell key={p.name} fill={p.color}/>)}</Pie><Tooltip contentStyle={{background:'#151c30',border:'1px solid #303c59',borderRadius:10}}/></PieChart></ResponsiveContainer><div className="legend">{pie.map(p => <span key={p.name}><i style={{background:p.color}}/>{p.name} <b>{p.value}</b></span>)}</div></div></article>
     </section>
     <section className="bottom-grid"><article className="panel"><div className="panel-title"><div><h2>Top problematic devices</h2><p>Dynamic risk score from downtime, latency, loss and alerts</p></div><ChevronRight size={18}/></div>{data.problematic.slice(0, 4).map((item, i) => <div className="rank" key={item.device.id}><span className="rank-number">0{i+1}</span><span className="device-dot"><Server size={15}/></span><div><b>{item.device.name}</b><small>{item.device.address} · {item.device.location}</small></div><strong>{item.score}</strong><Badge status={item.level.toLowerCase()} /></div>)}</article><AlertsPreview alerts={data.alerts} /></section>
+    {data.mode === 'live' && <HotspotClientsPanel />}
   </>
 }
 
 function AlertsPreview({ alerts, onUpdate }: { alerts: Alert[]; onUpdate?: (id: number, action: 'acknowledge' | 'resolve') => void }) { return <article className="panel"><div className="panel-title"><div><h2>Smart alerts</h2><p>{alerts.filter(a => a.status === 'active').length} active issues need attention</p></div><Bell size={18}/></div>{alerts.slice(0, 4).map(a => <div className="alert-row" key={a.id}><span className={`severity ${a.severity}`}/><div><b>{a.message}</b><small>{a.deviceName} · {date(a.createdAt)}</small></div><Badge status={a.severity}/>{onUpdate && a.status === 'active' && <button className="ghost" onClick={() => onUpdate(a.id, 'acknowledge')}>Ack</button>}</div>)}</article> }
+
+function HotspotClientsPanel() {
+  const [snapshot, setSnapshot] = useState<HotspotSnapshot | null>(null)
+  useEffect(() => { let active = true; const load = () => api.hotspotClients().then(result => { if (active) setSnapshot(result) }).catch(() => { if (active) setSnapshot(null) }); load(); const timer = setInterval(load, 2000); return () => { active = false; clearInterval(timer) } }, [])
+  const formatBytes = (value: number) => value >= 1_000_000 ? `${fmt(value / 1_000_000, 1)} MB` : `${fmt(value / 1_000, 1)} KB`
+  return <section className="panel hotspot-panel"><div className="panel-title"><div><h2>Hotspot client traffic</h2><p>{snapshot?.interface || 'Looking for a Windows Mobile Hotspot adapter'} · real packet-counted traffic per connected device</p></div><Badge status={snapshot?.captureActive ? 'online' : 'warning'} /></div>{!snapshot ? <p className="panel-copy">Connecting to the hotspot collector…</p> : !snapshot.enabled ? <p className="panel-copy">{snapshot.message}</p> : <><p className="capture-status">{snapshot.message}</p><div className="hotspot-table"><div className="hotspot-header"><span>Client</span><span>MAC address</span><span>Download</span><span>Upload</span><span>Total traffic</span></div>{snapshot.clients.map(client => <div className="hotspot-row" key={client.ip}><div><b>{client.ip}</b><small>Last activity {date(client.lastSeen)}</small></div><span className="mono">{client.mac}</span><strong className="download-rate">↓ {fmt(client.downloadMbps, 2)} Mbps</strong><strong className="upload-rate">↑ {fmt(client.uploadMbps, 2)} Mbps</strong><span>{formatBytes(client.totalDownloadBytes + client.totalUploadBytes)}</span></div>)}{!snapshot.clients.length && <p className="panel-copy">No active hotspot clients found yet.</p>}</div></>}</section>
+}
 
 function DevicesPage({ devices, refresh }: { devices: Device[]; refresh: () => void }) { const [showForm, setShowForm] = useState(false); const [name, setName] = useState(''); const [address, setAddress] = useState(''); const [error, setError] = useState(''); const [checking, setChecking] = useState<number | null>(null)
  const add = async (e: React.FormEvent) => { e.preventDefault(); if (!name || !address) return setError('Device name and IPv4 address or hostname are required.'); try { await api.addDevice({ name, address, type: 'Computer', location: 'New location', monitoringInterval: 30 }); setName(''); setAddress(''); setShowForm(false); refresh() } catch (err) { setError(err instanceof Error ? err.message : 'Unable to add device') } }

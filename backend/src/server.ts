@@ -72,6 +72,12 @@ const dashboard = () => {
 app.post('/api/auth/login',async(req,res,next)=>{try{const body=z.object({email:z.string().email(),password:z.string().min(1)}).parse(req.body);const demoEmail='admin@network.local',hash=await bcrypt.hash('admin123',10);if(body.email!==demoEmail||!(await bcrypt.compare(body.password,hash)))return res.status(401).json({message:'Invalid credentials'});res.json({token:jwt.sign({role:'admin',email:body.email},secret,{expiresIn:'8h'}),user:{name:'Admin User',role:'admin'}})}catch(e){next(e)}})
 app.get('/api/dashboard',async(_req,res,next)=>{try{if(monitor instanceof LiveMonitoringService)await monitor.refreshTraffic();res.json(dashboard())}catch(e){next(e)}});
 app.get('/api/devices',(_req,res)=>res.json(monitor.devices));
+app.get('/api/hotspot/clients', async (_req, res, next) => {
+  try {
+    if (!(monitor instanceof LiveMonitoringService)) return res.json({ enabled: false, captureActive: false, message: 'Hotspot client traffic is available only in Live Mode.', clients: [] })
+    res.json(await monitor.getHotspotSnapshot())
+  } catch (error) { next(error) }
+});
 app.post('/api/devices',(req,res,next)=>{try{const body=z.object({name:z.string().min(2).max(80),address:z.string().min(2).max(253),type:z.string().optional(),location:z.string().optional(),monitoringInterval:z.number().int().min(5).max(3600).optional()}).parse(req.body);res.status(201).json(monitor.addDevice(body))}catch(e){next(e)}});
 app.get('/api/devices/:id',(req,res,next)=>{try{res.json(monitor.getDevice(+req.params.id))}catch(e){next(e)}})
 app.get('/api/monitoring/:deviceId',(req,res)=>res.json(monitor.metrics.get(+req.params.deviceId)||[]));
