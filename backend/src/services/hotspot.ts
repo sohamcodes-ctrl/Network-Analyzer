@@ -10,7 +10,7 @@ const tsharkPath = () => process.env.TSHARK_PATH || 'C:\\Program Files\\Wireshar
 const subnet = process.env.HOTSPOT_SUBNET || '192.168.137.0/24'
 const subnetPrefix = subnet.replace(/\.0\/24$/, '.')
 
-function command(commandName: string, args: string[], timeout = 6000): Promise<string> {
+function command(commandName: string, args: string[], timeout = 20000): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(commandName, args, { windowsHide: true, shell: false })
     let stdout = ''; let stderr = ''
@@ -22,7 +22,7 @@ function command(commandName: string, args: string[], timeout = 6000): Promise<s
   })
 }
 
-const isClientIp = (ip: string, gateway: string) => ip.startsWith(subnetPrefix) && ip !== gateway
+const isClientIp = (ip: string, gateway: string) => ip.startsWith(subnetPrefix) && ip !== gateway && !ip.endsWith('.255')
 
 export class HotspotTrafficService {
   private capture: ChildProcessWithoutNullStreams | null = null
@@ -31,7 +31,14 @@ export class HotspotTrafficService {
   private lastError = ''
 
   async snapshot(): Promise<HotspotSnapshot> {
-    const hotspot = await this.findHotspotInterface()
+    let hotspot: HotspotInterface | null = null
+    try {
+      hotspot = await this.findHotspotInterface()
+    } catch (e) {
+      this.stopCapture()
+      return { enabled: false, captureActive: false, message: `Error finding hotspot: ${e instanceof Error ? e.message : String(e)}`, clients: [] }
+    }
+
     if (!hotspot) {
       this.stopCapture()
       return { enabled: false, captureActive: false, message: `No active Windows Mobile Hotspot adapter found on ${subnet}.`, clients: [] }
@@ -53,15 +60,18 @@ export class HotspotTrafficService {
   }
 
   private async findHotspotInterface(): Promise<HotspotInterface | null> {
-    const script = `$ip=Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -like '${subnetPrefix}*'} | Select-Object -First 1; if($ip){$adapter=Get-NetAdapter -InterfaceIndex $ip.InterfaceIndex; @{ip=$ip.IPAddress;interfaceAlias=$adapter.Name;interfaceGuid=$adapter.InterfaceGuid.Guid;interfaceIndex=$ip.InterfaceIndex}|ConvertTo-Json -Compress}`
+    const script = `$ip=Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -like '${subnetPrefix}*'} | Select-Object -First 1; if($ip){$adapter=Get-NetAdapter -InterfaceIndex $ip.InterfaceIndex; @{ip=$ip.IPAddress;interfaceAlias=$adapter.Name;interfaceGuid=$adapter.InterfaceGuid;interfaceIndex=$ip.InterfaceIndex}|ConvertTo-Json -Compress}`
     try {
       const raw = await command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script])
-      return raw.trim() ? JSON.parse(raw) as HotspotInterface : null
-    } catch { return null }
+      if (!raw.trim()) return null
+      return JSON.parse(raw) as HotspotInterface
+    } catch (e) {
+      throw new Error(`powershell error: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   private async mergeNeighbors(hotspot: HotspotInterface) {
-    const script = `Get-NetNeighbor -AddressFamily IPv4 -InterfaceIndex ${hotspot.interfaceIndex} | Where-Object {$_.State -in 'Reachable','Stale','Delay','Probe'} | Select-Object IPAddress,LinkLayerAddress | ConvertTo-Json -Compress`
+    const script = `Get-NetNeighbor -AddressFamily IPv4 -InterfaceIndex ${hotspot.interfaceIndex} | Where-Object {$_.State -in 'Reachable','Stale','Delay','Probe','Permanent'} | Select-Object IPAddress,LinkLayerAddress | ConvertTo-Json -Compress`
     try {
       const raw = await command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script])
       if (!raw.trim()) return
