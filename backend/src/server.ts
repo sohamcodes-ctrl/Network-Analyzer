@@ -1,7 +1,6 @@
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
-import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
 import { z } from 'zod'
 import { SimulationService } from './services/simulation.js'
@@ -9,15 +8,29 @@ import { LiveMonitoringService } from './services/live.js'
 import { speedTestService } from './services/speedtest.js'
 import { pearson, statistics } from './services/statistics.js'
 import { settingsService } from './services/settings.js'
+import { authenticate, clearExpiredLoginAttempts, issueToken, loginRateLimit, requireRole } from './auth.js'
 
 const app = express()
 const port = Number(process.env.PORT || 4000)
 let simulationMode = process.env.SIMULATION_MODE === 'true'
 let monitor: SimulationService | LiveMonitoringService = simulationMode ? new SimulationService() : new LiveMonitoringService()
-const secret = process.env.JWT_SECRET || 'development-only-change-me'
+const adminEmail = process.env.ADMIN_EMAIL || 'admin@network.local'
+const adminPassword = process.env.ADMIN_PASSWORD || (process.env.NODE_ENV === 'production' ? '' : 'admin123')
+const viewerEmail = process.env.VIEWER_EMAIL || ''
+const viewerPassword = process.env.VIEWER_PASSWORD || ''
+if (process.env.NODE_ENV === 'production' && (!adminPassword || !process.env.JWT_SECRET)) {
+  throw new Error('ADMIN_PASSWORD and JWT_SECRET must be configured in production')
+}
+const adminPasswordHash = adminPassword ? bcrypt.hash(adminPassword, 10) : Promise.resolve('')
+const viewerPasswordHash = viewerPassword ? bcrypt.hash(viewerPassword, 10) : Promise.resolve('')
 
 app.use(cors({ origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173' }))
 app.use(express.json())
+app.use('/api', (req, res, next) => {
+  if (req.path === '/auth/login') return next()
+  authenticate(req, res, next)
+})
+setInterval(clearExpiredLoginAttempts, 15 * 60 * 1000).unref()
 const dashboard = () => {
   const devices = monitor.devices;
   const latest = devices.map(d => d.latest);
@@ -69,7 +82,19 @@ const dashboard = () => {
     traffic, devices, alerts: monitor.alerts.slice(0, 20), problematic
   };
 }
-app.post('/api/auth/login',async(req,res,next)=>{try{const body=z.object({email:z.string().email(),password:z.string().min(1)}).parse(req.body);const demoEmail='admin@network.local',hash=await bcrypt.hash('admin123',10);if(body.email!==demoEmail||!(await bcrypt.compare(body.password,hash)))return res.status(401).json({message:'Invalid credentials'});res.json({token:jwt.sign({role:'admin',email:body.email},secret,{expiresIn:'8h'}),user:{name:'Admin User',role:'admin'}})}catch(e){next(e)}})
+app.post('/api/auth/login', loginRateLimit, async (req, res, next) => {
+  try {
+    const body = z.object({ email: z.string().email(), password: z.string().min(1).max(256) }).parse(req.body)
+    const isAdmin = body.email.toLowerCase() === adminEmail.toLowerCase() && Boolean(adminPassword) && await bcrypt.compare(body.password, await adminPasswordHash)
+    const isViewer = Boolean(viewerEmail && viewerPassword) && body.email.toLowerCase() === viewerEmail.toLowerCase() && await bcrypt.compare(body.password, await viewerPasswordHash)
+    if (!isAdmin && !isViewer) return res.status(401).json({ message: 'Invalid credentials' })
+    const user = isAdmin
+      ? { id: 'admin', email: adminEmail, name: 'Admin User', role: 'admin' as const }
+      : { id: 'viewer', email: viewerEmail, name: 'Viewer', role: 'viewer' as const }
+    res.json({ token: issueToken(user), user })
+  } catch (error) { next(error) }
+})
+app.post('/api/auth/logout', (_req, res) => res.status(204).end())
 app.get('/api/dashboard',async(_req,res,next)=>{try{if(monitor instanceof LiveMonitoringService)await monitor.refreshTraffic();res.json(dashboard())}catch(e){next(e)}});
 app.get('/api/devices',(_req,res)=>res.json(monitor.devices));
 app.get('/api/hotspot/clients', async (_req, res, next) => {
@@ -78,7 +103,7 @@ app.get('/api/hotspot/clients', async (_req, res, next) => {
     res.json(await monitor.getHotspotSnapshot())
   } catch (error) { next(error) }
 });
-app.post('/api/devices',(req,res,next)=>{try{const body=z.object({name:z.string().min(2).max(80),address:z.string().min(2).max(253),type:z.string().optional(),location:z.string().optional(),monitoringInterval:z.number().int().min(5).max(3600).optional()}).parse(req.body);res.status(201).json(monitor.addDevice(body))}catch(e){next(e)}});
+app.post('/api/devices', requireRole('admin'), (req,res,next)=>{try{const body=z.object({name:z.string().min(2).max(80),address:z.string().min(2).max(253),type:z.string().optional(),location:z.string().optional(),monitoringInterval:z.number().int().min(5).max(3600).optional()}).parse(req.body);res.status(201).json(monitor.addDevice(body))}catch(e){next(e)}});
 app.get('/api/devices/:id',(req,res,next)=>{try{res.json(monitor.getDevice(+req.params.id))}catch(e){next(e)}})
 app.get('/api/monitoring/:deviceId',(req,res)=>res.json(monitor.metrics.get(+req.params.deviceId)||[]));
 app.get('/api/monitoring/:deviceId/latest',(req,res,next)=>{try{res.json(monitor.getDevice(+req.params.deviceId).latest)}catch(e){next(e)}})
@@ -86,12 +111,12 @@ app.post('/api/monitoring/check/:deviceId',async(req,res,next)=>{try{res.json(aw
 app.get('/api/analytics/:deviceId/statistics',(req,res,next)=>{try{const records=monitor.metrics.get(+req.params.deviceId);if(!records)throw Object.assign(new Error('Device not found'),{status:404});const metric=String(req.query.metric||'latencyMs') as keyof typeof records[number];if(!['latencyMs','packetLossPercent','downloadMbps','uploadMbps','availabilityPercent'].includes(metric))throw Object.assign(new Error('Unsupported metric'),{status:400});res.json({...statistics(records,metric,String(req.query.method||'zscore')),correlation:pearson(records)})}catch(e){next(e)}})
 app.get('/api/analytics/:deviceId/anomalies',(req,res,next)=>{try{const records=monitor.metrics.get(+req.params.deviceId)||[];res.json(statistics(records,'latencyMs',String(req.query.method||'zscore')).anomalies)}catch(e){next(e)}})
 app.get('/api/alerts',(_req,res)=>res.json(monitor.alerts));
-app.put('/api/alerts/:id/:action',(req,res,next)=>{try{const action=z.enum(['acknowledge','resolve']).parse(req.params.action);res.json(monitor.updateAlert(+req.params.id,action==='acknowledge'?'acknowledged':'resolved'))}catch(e){next(e)}})
-app.post('/api/simulation/run',async(_req,res,next)=>{try{await monitor.runScenario();res.json(dashboard())}catch(e){next(e)}});
+app.put('/api/alerts/:id/:action', requireRole('admin'), (req,res,next)=>{try{const action=z.enum(['acknowledge','resolve']).parse(req.params.action);res.json(monitor.updateAlert(+req.params.id,action==='acknowledge'?'acknowledged':'resolved'))}catch(e){next(e)}})
+app.post('/api/simulation/run', requireRole('admin'), async(_req,res,next)=>{try{await monitor.runScenario();res.json(dashboard())}catch(e){next(e)}});
 app.get('/api/reports/:period',(req,res)=>{const data=dashboard();const daily={title:`${req.params.period==='weekly'?'Weekly':'Daily'} network report`,generatedAt:data.generatedAt,networkAvailability:`${data.kpis.availability.value}%`,averageLatency:`${data.kpis.averageLatency.value} ms`,packetLoss:`${data.kpis.packetLoss.value}%`,averageDownload:`${data.kpis.download.value} Mbps`,activeAlerts:data.alerts.filter(a=>a.status==='active').length,topProblematicDevices:data.problematic.slice(0,3).map(x=>`${x.device.name} (${x.score})`).join(', ')};res.json({report:daily})});
 
 app.get('/api/settings', (req, res) => res.json(settingsService.getSettings()));
-app.put('/api/settings', async (req, res, next) => {
+app.put('/api/settings', requireRole('admin'), async (req, res, next) => {
   try {
     const body = z.object({
       checkIntervalSeconds: z.number().int().min(5).max(3600),
@@ -124,8 +149,8 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
     return;
   }
   const e = err as { status?: number; message?: string; issues?: unknown };
-  console.error(err);
-  res.status(e.status || 400).json({ message: e.message || 'Invalid request', issues: e.issues });
+  console.error(JSON.stringify({ method: _req.method, path: _req.path, status: e.status || 500, message: e.message || 'Unhandled error' }))
+  res.status(e.status || 500).json({ message: e.status ? e.message || 'Invalid request' : 'Internal server error', issues: e.status ? e.issues : undefined });
 });
 
 settingsService.loadSettings().then(() => {

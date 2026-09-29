@@ -8,7 +8,7 @@ A full-stack academic network-monitoring project that makes network performance 
 - Express + TypeScript REST API with live Windows ping checks, local interface traffic measurement, optional simulation, a 30-second monitoring cycle, KPI aggregation, health score, alert evaluation, and on-demand checks.
 - Statistics: mean, median, variance, standard deviation, coefficient of variation, P25/P50/P75/P90/P95/P99, moving average, trend, Pearson correlation, and Z-score/IQR anomalies.
 - MySQL schema including indexed `network_metrics`, users, devices, alerts, alert rules, and monitoring logs; a seven-day seed script is included.
-- Authentication endpoint using bcrypt and JWT. Demo account: `admin@network.local` / `admin123` (use only in development; replace with database-backed users before deployment).
+- Authentication uses bcrypt-backed bootstrap credentials and JWT bearer tokens. Development defaults to `admin@network.local` / `admin123`; set `ADMIN_EMAIL`, `ADMIN_PASSWORD`, and a strong `JWT_SECRET` before use outside local development. Optional viewer credentials can be configured with `VIEWER_EMAIL` and `VIEWER_PASSWORD`.
 
 ## Architecture
 
@@ -17,11 +17,11 @@ React client → REST API → Express monitoring service → live Windows ICMP p
                          └──────────────────────────→ MySQL historical data
 ```
 
-The browser accesses only the API. The server stores the current session in memory, so it runs without MySQL. The SQL schema is ready for persistent production storage.
+The browser accesses only the API. Login is required for all API routes except `/api/auth/login`; administrator credentials are required for device creation, alert changes, simulation runs, and settings changes. The current session token is held in browser session storage and expires after eight hours. Monitoring state is still in memory; MySQL persistence is planned for the next phase.
 
 ## Run locally
 
-1. Copy `.env.example` to `.env`, set a strong `JWT_SECRET`, and change `MONITORED_TARGETS` to IP addresses or hostnames you are authorized to monitor. For example: `192.168.1.1,192.168.1.10,google.com`.
+1. Copy `.env.example` to `.env`, set a strong `JWT_SECRET` and non-default `ADMIN_PASSWORD`, and change `MONITORED_TARGETS` to IP addresses or hostnames you are authorized to monitor. For example: `192.168.1.1,192.168.1.10,google.com`.
 2. Run `npm install` in the project root.
 3. Run `npm run dev`.
 4. Open `http://localhost:5173`.
@@ -39,6 +39,8 @@ The backend is available at `http://localhost:4000`. Live Mode is the default (`
 | Alerts | `GET /api/alerts`; `PUT /api/alerts/:id/acknowledge`; `PUT /api/alerts/:id/resolve` |
 | Simulation | `POST /api/simulation/run` |
 | Reports | `GET /api/reports/daily`; `GET /api/reports/weekly` |
+
+All endpoints except `POST /api/auth/login` require `Authorization: Bearer <token>`. The login limiter allows five attempts per IP/email key within fifteen minutes. The current bootstrap users are environment-based; database-backed users will be introduced with persistence.
 
 ## Health and anomaly formulas
 
@@ -58,6 +60,12 @@ In Simulation Mode, use **Run network simulation** repeatedly to move the design
 
 When Windows Mobile Hotspot is enabled, the **Hotspot client traffic** panel identifies clients on `HOTSPOT_SUBNET` (by default `192.168.137.0/24`) and calculates their own download and upload rates from captured packet bytes. It requires Npcap and Wireshark's `tshark.exe`. Set `TSHARK_PATH` if Wireshark is installed elsewhere. The collector does not synthesize client traffic or alter a device's ping-based status.
 
+## Security notes
+
+- Never use the development password or JWT fallback in production. Production startup fails when `JWT_SECRET` or `ADMIN_PASSWORD` is missing.
+- Only monitor systems you own or are authorized to test. Target allowlisting and stronger SSRF protections will be added with the live monitoring repository work.
+- Logs contain request method, path, status, and a generic error message; passwords, tokens, and request bodies are not logged.
+
 ## Future scope
 
-Database repository integration, protected frontend routes, role-enforcement middleware, CSV export, websocket delivery, configurable rules UI, and a topology graph adapter are natural next steps.
+Database repository integration, persistent history, CSV export, websocket delivery, configurable rules UI, and a topology graph adapter are natural next steps.
