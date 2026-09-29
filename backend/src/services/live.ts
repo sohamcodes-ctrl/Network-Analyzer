@@ -69,6 +69,7 @@ export class LiveMonitoringService {
     const targets = (process.env.MONITORED_TARGETS || '127.0.0.1').split(',').map(value => value.trim()).filter(value => addressPattern.test(value))
     targets.forEach((address, index) => this.addDevice({ name: address === '127.0.0.1' ? 'This computer' : `Target-${index + 1}`, address, type: 'Computer', location: 'Real network', monitoringInterval: Number(process.env.MONITORING_INTERVAL_SECONDS || 30) }))
   }
+  hydrate(devices: Device[], metrics: Map<number, Metric[]>, alerts: Alert[]) { if (!devices.length) return; this.devices=devices; this.metrics=metrics; this.alerts=alerts; this.devices.forEach(device => { const history=this.metrics.get(device.id) || []; if (history.length) { device.latest=history.at(-1)!; device.lastChecked=device.latest.timestamp } }); this.alertId=Math.max(0,...alerts.map(alert=>alert.id))+1 }
   getDevice(id: number) { const device = this.devices.find(item => item.id === id); if (!device) throw Object.assign(new Error('Device not found'), { status: 404 }); return device }
   addDevice(input: Partial<Device>) {
     const address = input.address?.trim() || ''

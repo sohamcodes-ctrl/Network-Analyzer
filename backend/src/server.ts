@@ -9,11 +9,13 @@ import { speedTestService } from './services/speedtest.js'
 import { pearson, statistics } from './services/statistics.js'
 import { settingsService } from './services/settings.js'
 import { authenticate, clearExpiredLoginAttempts, issueToken, loginRateLimit, requireRole } from './auth.js'
+import { createRepository, type MonitorRepository } from './persistence.js'
 
 const app = express()
 const port = Number(process.env.PORT || 4000)
 let simulationMode = process.env.SIMULATION_MODE === 'true'
 let monitor: SimulationService | LiveMonitoringService = simulationMode ? new SimulationService() : new LiveMonitoringService()
+const repository = createRepository()
 const adminEmail = process.env.ADMIN_EMAIL || 'admin@network.local'
 const adminPassword = process.env.ADMIN_PASSWORD || (process.env.NODE_ENV === 'production' ? '' : 'admin123')
 const viewerEmail = process.env.VIEWER_EMAIL || ''
@@ -23,6 +25,30 @@ if (process.env.NODE_ENV === 'production' && (!adminPassword || !process.env.JWT
 }
 const adminPasswordHash = adminPassword ? bcrypt.hash(adminPassword, 10) : Promise.resolve('')
 const viewerPasswordHash = viewerPassword ? bcrypt.hash(viewerPassword, 10) : Promise.resolve('')
+
+const persistMonitorState = async () => {
+  if (!repository.enabled) return
+  await Promise.all(monitor.devices.map(async device => {
+    await repository.saveDevice(device)
+    await repository.saveMetric(device.id, device.latest)
+  }))
+  await Promise.all(monitor.alerts.map(alert => repository.saveAlert(alert)))
+}
+
+const restoreMonitorState = async () => {
+  if (!repository.enabled) return
+  const devices = await repository.loadDevices()
+  if (!devices.length) return
+  const metrics = await repository.loadMetrics(devices.map(device => device.id))
+  const alerts = await repository.loadAlerts()
+  monitor.hydrate(devices, metrics, alerts)
+}
+
+const ensureBootstrapUsers = async () => {
+  if (!repository.enabled) return
+  if (adminPassword) await repository.upsertUser({ id: 'admin', email: adminEmail, name: 'Admin User', role: 'admin', passwordHash: await adminPasswordHash })
+  if (viewerEmail && viewerPassword) await repository.upsertUser({ id: 'viewer', email: viewerEmail, name: 'Viewer', role: 'viewer', passwordHash: await viewerPasswordHash })
+}
 
 app.use(cors({ origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173' }))
 app.use(express.json())
@@ -85,17 +111,20 @@ const dashboard = () => {
 app.post('/api/auth/login', loginRateLimit, async (req, res, next) => {
   try {
     const body = z.object({ email: z.string().email(), password: z.string().min(1).max(256) }).parse(req.body)
+    const storedUser = await repository.findUserByEmail(body.email)
+    const isStoredUser = Boolean(storedUser && await bcrypt.compare(body.password, storedUser.passwordHash))
     const isAdmin = body.email.toLowerCase() === adminEmail.toLowerCase() && Boolean(adminPassword) && await bcrypt.compare(body.password, await adminPasswordHash)
     const isViewer = Boolean(viewerEmail && viewerPassword) && body.email.toLowerCase() === viewerEmail.toLowerCase() && await bcrypt.compare(body.password, await viewerPasswordHash)
-    if (!isAdmin && !isViewer) return res.status(401).json({ message: 'Invalid credentials' })
-    const user = isAdmin
+    if (!isStoredUser && !isAdmin && !isViewer) return res.status(401).json({ message: 'Invalid credentials' })
+    const user = storedUser && isStoredUser ? { id: storedUser.id, email: storedUser.email, name: storedUser.name, role: storedUser.role }
+      : isAdmin
       ? { id: 'admin', email: adminEmail, name: 'Admin User', role: 'admin' as const }
       : { id: 'viewer', email: viewerEmail, name: 'Viewer', role: 'viewer' as const }
     res.json({ token: issueToken(user), user })
   } catch (error) { next(error) }
 })
 app.post('/api/auth/logout', (_req, res) => res.status(204).end())
-app.get('/api/dashboard',async(_req,res,next)=>{try{if(monitor instanceof LiveMonitoringService)await monitor.refreshTraffic();res.json(dashboard())}catch(e){next(e)}});
+app.get('/api/dashboard',async(_req,res,next)=>{try{if(monitor instanceof LiveMonitoringService){await monitor.refreshTraffic();await persistMonitorState()}res.json(dashboard())}catch(e){next(e)}});
 app.get('/api/devices',(_req,res)=>res.json(monitor.devices));
 app.get('/api/hotspot/clients', async (_req, res, next) => {
   try {
@@ -103,16 +132,16 @@ app.get('/api/hotspot/clients', async (_req, res, next) => {
     res.json(await monitor.getHotspotSnapshot())
   } catch (error) { next(error) }
 });
-app.post('/api/devices', requireRole('admin'), (req,res,next)=>{try{const body=z.object({name:z.string().min(2).max(80),address:z.string().min(2).max(253),type:z.string().optional(),location:z.string().optional(),monitoringInterval:z.number().int().min(5).max(3600).optional()}).parse(req.body);res.status(201).json(monitor.addDevice(body))}catch(e){next(e)}});
+app.post('/api/devices', requireRole('admin'), async (req,res,next)=>{try{const body=z.object({name:z.string().min(2).max(80),address:z.string().min(2).max(253),type:z.string().optional(),location:z.string().optional(),monitoringInterval:z.number().int().min(5).max(3600).optional()}).parse(req.body);const device=monitor.addDevice(body);await persistMonitorState();res.status(201).json(device)}catch(e){next(e)}});
 app.get('/api/devices/:id',(req,res,next)=>{try{res.json(monitor.getDevice(+req.params.id))}catch(e){next(e)}})
 app.get('/api/monitoring/:deviceId',(req,res)=>res.json(monitor.metrics.get(+req.params.deviceId)||[]));
 app.get('/api/monitoring/:deviceId/latest',(req,res,next)=>{try{res.json(monitor.getDevice(+req.params.deviceId).latest)}catch(e){next(e)}})
-app.post('/api/monitoring/check/:deviceId',async(req,res,next)=>{try{res.json(await monitor.check(+req.params.deviceId))}catch(e){next(e)}})
+app.post('/api/monitoring/check/:deviceId',async(req,res,next)=>{try{const deviceId=+req.params.deviceId;const metric=await monitor.check(deviceId);await persistMonitorState();res.json(metric)}catch(e){next(e)}})
 app.get('/api/analytics/:deviceId/statistics',(req,res,next)=>{try{const records=monitor.metrics.get(+req.params.deviceId);if(!records)throw Object.assign(new Error('Device not found'),{status:404});const metric=String(req.query.metric||'latencyMs') as keyof typeof records[number];if(!['latencyMs','packetLossPercent','downloadMbps','uploadMbps','availabilityPercent'].includes(metric))throw Object.assign(new Error('Unsupported metric'),{status:400});res.json({...statistics(records,metric,String(req.query.method||'zscore')),correlation:pearson(records)})}catch(e){next(e)}})
 app.get('/api/analytics/:deviceId/anomalies',(req,res,next)=>{try{const records=monitor.metrics.get(+req.params.deviceId)||[];res.json(statistics(records,'latencyMs',String(req.query.method||'zscore')).anomalies)}catch(e){next(e)}})
 app.get('/api/alerts',(_req,res)=>res.json(monitor.alerts));
-app.put('/api/alerts/:id/:action', requireRole('admin'), (req,res,next)=>{try{const action=z.enum(['acknowledge','resolve']).parse(req.params.action);res.json(monitor.updateAlert(+req.params.id,action==='acknowledge'?'acknowledged':'resolved'))}catch(e){next(e)}})
-app.post('/api/simulation/run', requireRole('admin'), async(_req,res,next)=>{try{await monitor.runScenario();res.json(dashboard())}catch(e){next(e)}});
+app.put('/api/alerts/:id/:action', requireRole('admin'), async (req,res,next)=>{try{const action=z.enum(['acknowledge','resolve']).parse(req.params.action);const alert=monitor.updateAlert(+req.params.id,action==='acknowledge'?'acknowledged':'resolved');await repository.saveAlert(alert);res.json(alert)}catch(e){next(e)}})
+app.post('/api/simulation/run', requireRole('admin'), async(_req,res,next)=>{try{await monitor.runScenario();await persistMonitorState();res.json(dashboard())}catch(e){next(e)}});
 app.get('/api/reports/:period',(req,res)=>{const data=dashboard();const daily={title:`${req.params.period==='weekly'?'Weekly':'Daily'} network report`,generatedAt:data.generatedAt,networkAvailability:`${data.kpis.availability.value}%`,averageLatency:`${data.kpis.averageLatency.value} ms`,packetLoss:`${data.kpis.packetLoss.value}%`,averageDownload:`${data.kpis.download.value} Mbps`,activeAlerts:data.alerts.filter(a=>a.status==='active').length,topProblematicDevices:data.problematic.slice(0,3).map(x=>`${x.device.name} (${x.score})`).join(', ')};res.json({report:daily})});
 
 app.get('/api/settings', (req, res) => res.json(settingsService.getSettings()));
@@ -133,7 +162,9 @@ app.put('/api/settings', requireRole('admin'), async (req, res, next) => {
     if (oldMode !== body.operatingMode) {
       simulationMode = body.operatingMode === 'simulation';
       monitor = simulationMode ? new SimulationService() : new LiveMonitoringService();
-      void monitor.tick();
+      await restoreMonitorState();
+      await monitor.tick();
+      await persistMonitorState();
     }
     
     res.json(settingsService.getSettings());
@@ -153,10 +184,17 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
   res.status(e.status || 500).json({ message: e.status ? e.message || 'Invalid request' : 'Internal server error', issues: e.status ? e.issues : undefined });
 });
 
-settingsService.loadSettings().then(() => {
+const start = async () => {
+  await repository.initialize()
+  await ensureBootstrapUsers()
+  await settingsService.loadSettings()
   simulationMode = settingsService.getSettings().operatingMode === 'simulation';
   monitor = simulationMode ? new SimulationService() : new LiveMonitoringService();
-  void monitor.tick(); 
-  setInterval(() => void monitor.tick(), settingsService.getSettings().checkIntervalSeconds * 1000);
+  await restoreMonitorState()
+  await monitor.tick()
+  await persistMonitorState()
+  setInterval(() => void monitor.tick().then(persistMonitorState).catch(error => console.error('Scheduled monitoring persistence failed', error)), settingsService.getSettings().checkIntervalSeconds * 1000);
   app.listen(port, () => console.log(`Monitoring API listening on http://localhost:${port}`));
-});
+}
+
+start().catch(error => { console.error('Unable to start monitoring API', error); process.exitCode = 1 })
