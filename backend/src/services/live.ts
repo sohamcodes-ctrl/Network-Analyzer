@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import type { Alert, Device, Metric, Status } from '../types.js'
+import type { Alert, Device, Metric, MonitoringDiagnostic, Status } from '../types.js'
 import { HotspotTrafficService, type HotspotClient, type HotspotSnapshot } from './hotspot.js'
 
 const now = () => new Date().toISOString()
@@ -43,26 +43,32 @@ async function physicalNetworkOnline(): Promise<boolean> {
 }
 const isLoopback = (address: string) => address === 'localhost' || address === '::1' || /^127\./.test(address)
 
-async function probe(address: string): Promise<{ status: Status; metric: Metric }> {
+export const parsePingOutput = (output: string) => {
+  const received = Number(output.match(/Received\s*=\s*(\d+)/i)?.[1] || 0)
+  const loss = Number(output.match(/\((\d+)%\s*loss\)/i)?.[1] || (100 - received / 4 * 100))
+  const samples = [...output.matchAll(/time[=<]\s*(\d+)\s*ms/gi)].map(match => Number(match[1]))
+  const average = Number(output.match(/Average\s*=\s*(\d+)ms/i)?.[1] || (samples.length ? samples.reduce((sum, value) => sum + value, 0) / samples.length : 0))
+  return { received, loss, average }
+}
+
+async function probe(address: string): Promise<{ status: Status; metric: Metric; errorMessage?: string }> {
   const count = 4
-  if (isLoopback(address) && !(await physicalNetworkOnline())) return { status: 'offline', metric: { timestamp: now(), latencyMs: 0, packetLossPercent: 100, downloadMbps: 0, uploadMbps: 0, availabilityPercent: 0, errorCount: count, responseTimeMs: 0 } }
+  if (isLoopback(address) && !(await physicalNetworkOnline())) return { status: 'offline', metric: { timestamp: now(), latencyMs: 0, packetLossPercent: 100, downloadMbps: 0, uploadMbps: 0, availabilityPercent: 0, errorCount: count, responseTimeMs: 0 }, errorMessage: 'No active physical IPv4 network interface.' }
   try {
     const output = await run('ping', ['-n', String(count), '-w', '1000', address], 6500)
-    const received = Number(output.match(/Received\s*=\s*(\d+)/i)?.[1] || 0)
-    const loss = Number(output.match(/\((\d+)%\s*loss\)/i)?.[1] || (100 - received / count * 100))
-    const samples = [...output.matchAll(/time[=<]\s*(\d+)\s*ms/gi)].map(match => Number(match[1]))
-    const average = Number(output.match(/Average\s*=\s*(\d+)ms/i)?.[1] || (samples.length ? samples.reduce((sum, value) => sum + value, 0) / samples.length : 0))
+    const { received, loss, average } = parsePingOutput(output)
     const traffic = await localTraffic()
     const online = received > 0
     const status: Status = !online ? 'offline' : average > 100 || loss > 1 ? 'warning' : 'online'
-    return { status, metric: { timestamp: now(), latencyMs: round(average || (online ? 1 : 0), 1), packetLossPercent: round(loss, 2), downloadMbps: traffic.downloadMbps, uploadMbps: traffic.uploadMbps, availabilityPercent: round(received / count * 100, 2), errorCount: count - received, responseTimeMs: round(average || (online ? 1 : 0), 1) } }
-  } catch {
-    return { status: 'offline', metric: { timestamp: now(), latencyMs: 0, packetLossPercent: 100, downloadMbps: 0, uploadMbps: 0, availabilityPercent: 0, errorCount: count, responseTimeMs: 0 } }
+    return { status, metric: { timestamp: now(), latencyMs: round(average || (online ? 1 : 0), 1), packetLossPercent: round(loss, 2), downloadMbps: traffic.downloadMbps, uploadMbps: traffic.uploadMbps, availabilityPercent: round(received / count * 100, 2), errorCount: count - received, responseTimeMs: round(average || (online ? 1 : 0), 1) }, errorMessage: online ? undefined : `Ping failed: ${loss}% packet loss.` }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Ping probe failed.'
+    return { status: 'offline', metric: { timestamp: now(), latencyMs: 0, packetLossPercent: 100, downloadMbps: 0, uploadMbps: 0, availabilityPercent: 0, errorCount: count, responseTimeMs: 0 }, errorMessage: message }
   }
 }
 
 export class LiveMonitoringService {
-  devices: Device[] = []; metrics = new Map<number, Metric[]>(); alerts: Alert[] = []; private alertId = 1
+  devices: Device[] = []; metrics = new Map<number, Metric[]>(); alerts: Alert[] = []; diagnostics: MonitoringDiagnostic[] = []; private alertId = 1
   private hotspotTraffic = new HotspotTrafficService()
   private hotspotClients: HotspotClient[] = []
   constructor() {
@@ -89,6 +95,8 @@ export class LiveMonitoringService {
     }
     device.status = result.status; device.latest = result.metric; device.lastChecked = result.metric.timestamp
     const records = this.metrics.get(id) || []; records.push(result.metric); this.metrics.set(id, records.slice(-2016))
+    this.diagnostics.unshift({ deviceId: id, timestamp: result.metric.timestamp, result: result.errorMessage ? 'failure' : 'success', responseTimeMs: result.metric.responseTimeMs, message: result.errorMessage })
+    this.diagnostics = this.diagnostics.slice(0, 200)
     this.evaluate(device, result.metric); return result.metric
   }
   async tick() {

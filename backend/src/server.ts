@@ -52,6 +52,18 @@ const ensureBootstrapUsers = async () => {
   if (viewerEmail && viewerPassword) await repository.upsertUser({ id: 'viewer', email: viewerEmail, name: 'Viewer', role: 'viewer', passwordHash: await viewerPasswordHash })
 }
 
+const persistDiagnostic = async (deviceId: number, fallbackError?: unknown) => {
+  if (!repository.enabled) return
+  const diagnostic = monitor.diagnostics.find(item => item.deviceId === deviceId)
+  const error = fallbackError instanceof Error ? fallbackError.message : typeof fallbackError === 'string' ? fallbackError : diagnostic?.message
+  await repository.saveLog(deviceId, error ? 'failure' : 'success', diagnostic?.responseTimeMs ?? null, error)
+}
+
+const schedulerOptions = () => ({
+  onCheckComplete: async (deviceId: number) => { await persistMonitorState(); await persistDiagnostic(deviceId) },
+  onCheckError: async (deviceId: number, error: unknown) => { console.error(`Scheduled check failed for device ${deviceId}`, error); await persistDiagnostic(deviceId, error) }
+})
+
 app.use(cors({ origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173' }))
 app.use(express.json())
 app.use('/api', (req, res, next) => {
@@ -138,10 +150,11 @@ app.post('/api/devices', requireRole('admin'), async (req,res,next)=>{try{const 
 app.get('/api/devices/:id',(req,res,next)=>{try{res.json(monitor.getDevice(+req.params.id))}catch(e){next(e)}})
 app.get('/api/monitoring/:deviceId',(req,res)=>res.json(monitor.metrics.get(+req.params.deviceId)||[]));
 app.get('/api/monitoring/:deviceId/latest',(req,res,next)=>{try{res.json(monitor.getDevice(+req.params.deviceId).latest)}catch(e){next(e)}})
-app.post('/api/monitoring/check/:deviceId',async(req,res,next)=>{try{const deviceId=+req.params.deviceId;const metric=await monitor.check(deviceId);await persistMonitorState();res.json(metric)}catch(e){next(e)}})
+app.post('/api/monitoring/check/:deviceId',async(req,res,next)=>{try{const deviceId=+req.params.deviceId;const metric=await monitor.check(deviceId);await persistMonitorState();await persistDiagnostic(deviceId);res.json(metric)}catch(e){next(e)}})
 app.get('/api/analytics/:deviceId/statistics',(req,res,next)=>{try{const records=monitor.metrics.get(+req.params.deviceId);if(!records)throw Object.assign(new Error('Device not found'),{status:404});const metric=String(req.query.metric||'latencyMs') as keyof typeof records[number];if(!['latencyMs','packetLossPercent','downloadMbps','uploadMbps','availabilityPercent'].includes(metric))throw Object.assign(new Error('Unsupported metric'),{status:400});res.json({...statistics(records,metric,String(req.query.method||'zscore')),correlation:pearson(records)})}catch(e){next(e)}})
 app.get('/api/analytics/:deviceId/anomalies',(req,res,next)=>{try{const records=monitor.metrics.get(+req.params.deviceId)||[];res.json(statistics(records,'latencyMs',String(req.query.method||'zscore')).anomalies)}catch(e){next(e)}})
 app.get('/api/alerts',(_req,res)=>res.json(monitor.alerts));
+app.get('/api/diagnostics',(_req,res)=>res.json(monitor.diagnostics.slice(0, 100)));
 app.put('/api/alerts/:id/:action', requireRole('admin'), async (req,res,next)=>{try{const action=z.enum(['acknowledge','resolve']).parse(req.params.action);const alert=monitor.updateAlert(+req.params.id,action==='acknowledge'?'acknowledged':'resolved');await repository.saveAlert(alert);res.json(alert)}catch(e){next(e)}})
 app.post('/api/simulation/run', requireRole('admin'), async(_req,res,next)=>{try{await monitor.runScenario();await persistMonitorState();res.json(dashboard())}catch(e){next(e)}});
 app.get('/api/reports/:period',(req,res)=>{const data=dashboard();const daily={title:`${req.params.period==='weekly'?'Weekly':'Daily'} network report`,generatedAt:data.generatedAt,networkAvailability:`${data.kpis.availability.value}%`,averageLatency:`${data.kpis.averageLatency.value} ms`,packetLoss:`${data.kpis.packetLoss.value}%`,averageDownload:`${data.kpis.download.value} Mbps`,activeAlerts:data.alerts.filter(a=>a.status==='active').length,topProblematicDevices:data.problematic.slice(0,3).map(x=>`${x.device.name} (${x.score})`).join(', ')};res.json({report:daily})});
