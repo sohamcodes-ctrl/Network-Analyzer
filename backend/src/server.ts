@@ -9,13 +9,15 @@ import { speedTestService } from './services/speedtest.js'
 import { pearson, statistics } from './services/statistics.js'
 import { settingsService } from './services/settings.js'
 import { authenticate, clearExpiredLoginAttempts, issueToken, loginRateLimit, requireRole } from './auth.js'
-import { createRepository, type MonitorRepository } from './persistence.js'
+import { createRepository } from './persistence.js'
+import { MonitoringScheduler } from './services/scheduler.js'
 
 const app = express()
 const port = Number(process.env.PORT || 4000)
 let simulationMode = process.env.SIMULATION_MODE === 'true'
 let monitor: SimulationService | LiveMonitoringService = simulationMode ? new SimulationService() : new LiveMonitoringService()
 const repository = createRepository()
+const scheduler = new MonitoringScheduler()
 const adminEmail = process.env.ADMIN_EMAIL || 'admin@network.local'
 const adminPassword = process.env.ADMIN_PASSWORD || (process.env.NODE_ENV === 'production' ? '' : 'admin123')
 const viewerEmail = process.env.VIEWER_EMAIL || ''
@@ -132,7 +134,7 @@ app.get('/api/hotspot/clients', async (_req, res, next) => {
     res.json(await monitor.getHotspotSnapshot())
   } catch (error) { next(error) }
 });
-app.post('/api/devices', requireRole('admin'), async (req,res,next)=>{try{const body=z.object({name:z.string().min(2).max(80),address:z.string().min(2).max(253),type:z.string().optional(),location:z.string().optional(),monitoringInterval:z.number().int().min(5).max(3600).optional()}).parse(req.body);const device=monitor.addDevice(body);await persistMonitorState();res.status(201).json(device)}catch(e){next(e)}});
+app.post('/api/devices', requireRole('admin'), async (req,res,next)=>{try{const body=z.object({name:z.string().min(2).max(80),address:z.string().min(2).max(253),type:z.string().optional(),location:z.string().optional(),monitoringInterval:z.number().int().min(5).max(3600).optional()}).parse(req.body);const device=monitor.addDevice(body);await persistMonitorState();scheduler.refresh();res.status(201).json(device)}catch(e){next(e)}});
 app.get('/api/devices/:id',(req,res,next)=>{try{res.json(monitor.getDevice(+req.params.id))}catch(e){next(e)}})
 app.get('/api/monitoring/:deviceId',(req,res)=>res.json(monitor.metrics.get(+req.params.deviceId)||[]));
 app.get('/api/monitoring/:deviceId/latest',(req,res,next)=>{try{res.json(monitor.getDevice(+req.params.deviceId).latest)}catch(e){next(e)}})
@@ -163,8 +165,7 @@ app.put('/api/settings', requireRole('admin'), async (req, res, next) => {
       simulationMode = body.operatingMode === 'simulation';
       monitor = simulationMode ? new SimulationService() : new LiveMonitoringService();
       await restoreMonitorState();
-      await monitor.tick();
-      await persistMonitorState();
+      scheduler.start(monitor, { onCheckComplete: persistMonitorState, onCheckError: (deviceId, error) => console.error(`Scheduled check failed for device ${deviceId}`, error) });
     }
     
     res.json(settingsService.getSettings());
@@ -191,9 +192,7 @@ const start = async () => {
   simulationMode = settingsService.getSettings().operatingMode === 'simulation';
   monitor = simulationMode ? new SimulationService() : new LiveMonitoringService();
   await restoreMonitorState()
-  await monitor.tick()
-  await persistMonitorState()
-  setInterval(() => void monitor.tick().then(persistMonitorState).catch(error => console.error('Scheduled monitoring persistence failed', error)), settingsService.getSettings().checkIntervalSeconds * 1000);
+  scheduler.start(monitor, { onCheckComplete: persistMonitorState, onCheckError: (deviceId, error) => console.error(`Scheduled check failed for device ${deviceId}`, error) });
   app.listen(port, () => console.log(`Monitoring API listening on http://localhost:${port}`));
 }
 
