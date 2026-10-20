@@ -28,7 +28,7 @@ test('does not overlap checks when the scheduler is refreshed mid-probe', async 
   }
   const scheduler = new MonitoringScheduler()
   scheduler.start(target)
-  await new Promise<void>(resolve => setImmediate(resolve))
+  await new Promise<void>(resolve => setTimeout(resolve, 20))
   assert.equal(calls, 1)
   assert.equal(scheduler.isRunning(device.id), true)
   scheduler.refresh()

@@ -47,6 +47,15 @@ export class MonitoringScheduler {
     }
   }
 
+  setIntervalSeconds(seconds: number) {
+    if (!Number.isInteger(seconds) || seconds < 5 || seconds > 3600) throw new Error('Scheduler interval must be between 5 and 3600 seconds')
+    for (const [deviceId, timer] of this.timers) {
+      clearTimeout(timer)
+      this.timers.delete(deviceId)
+    }
+    this.refresh()
+  }
+
   isRunning(deviceId: number) { return this.running.has(deviceId) }
   scheduledDeviceIds() { return [...this.timers.keys()].sort((left, right) => left - right) }
 

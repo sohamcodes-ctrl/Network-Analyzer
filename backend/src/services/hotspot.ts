@@ -59,6 +59,11 @@ export class HotspotTrafficService {
     this.hotspot = null
   }
 
+  stop() {
+    this.stopCapture()
+    this.clients.clear()
+  }
+
   private async findHotspotInterface(): Promise<HotspotInterface | null> {
     const script = `$ip=Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -like '${subnetPrefix}*'} | Select-Object -First 1; if($ip){$adapter=Get-NetAdapter -InterfaceIndex $ip.InterfaceIndex; @{ip=$ip.IPAddress;interfaceAlias=$adapter.Name;interfaceGuid=$adapter.InterfaceGuid;interfaceIndex=$ip.InterfaceIndex}|ConvertTo-Json -Compress}`
     try {

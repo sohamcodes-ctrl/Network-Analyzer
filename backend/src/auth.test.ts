@@ -3,7 +3,7 @@ import test from 'node:test'
 import type { NextFunction, Request, Response } from 'express'
 import { authenticate, issueToken, loginRateLimit, requireRole } from './auth.js'
 
-process.env.JWT_SECRET = 'test-secret-with-enough-entropy'
+process.env.JWT_SECRET = 'test-secret-with-enough-entropy-for-auth-tests'
 
 const response = () => {
   let statusCode = 200

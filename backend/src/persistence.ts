@@ -1,6 +1,9 @@
 import mysql, { type Pool, type RowDataPacket } from 'mysql2/promise'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import type { AuthUser } from './auth.js'
 import type { Alert, Device, Metric } from './types.js'
+import type { AppSettings } from './services/settings.js'
 
 export type StoredUser = AuthUser & { passwordHash: string }
 
@@ -58,9 +61,12 @@ export interface MonitorRepository {
   saveDevice(device: Device): Promise<void>
   saveMetric(deviceId: number, metric: Metric): Promise<void>
   saveAlert(alert: Alert): Promise<void>
+  saveState(devices: Device[], alerts: Alert[]): Promise<void>
   saveLog(deviceId: number, result: 'success' | 'failure', responseTime: number | null, errorMessage?: string): Promise<void>
   findUserByEmail(email: string): Promise<StoredUser | null>
   upsertUser(user: StoredUser): Promise<void>
+  loadSettings(): Promise<Partial<AppSettings> | null>
+  saveSettings(settings: AppSettings): Promise<void>
 }
 
 class NoopRepository implements MonitorRepository {
@@ -73,9 +79,12 @@ class NoopRepository implements MonitorRepository {
   async saveDevice(_device: Device) {}
   async saveMetric(_deviceId: number, _metric: Metric) {}
   async saveAlert(_alert: Alert) {}
+  async saveState(_devices: Device[], _alerts: Alert[]) {}
   async saveLog(_deviceId: number, _result: 'success' | 'failure', _responseTime: number | null, _errorMessage?: string) {}
   async findUserByEmail(_email: string) { return null }
   async upsertUser(_user: StoredUser) {}
+  async loadSettings() { return null }
+  async saveSettings(_settings: AppSettings) {}
 }
 
 class MySqlRepository implements MonitorRepository {
@@ -93,7 +102,8 @@ class MySqlRepository implements MonitorRepository {
       connectionLimit: Number(process.env.DB_CONNECTION_LIMIT || 10),
       queueLimit: 0,
       enableKeepAlive: true,
-      connectTimeout: 5000
+      connectTimeout: 5000,
+      multipleStatements: true
     })
   }
 
@@ -104,14 +114,26 @@ class MySqlRepository implements MonitorRepository {
         applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `)
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS app_settings (
-        setting_key VARCHAR(100) PRIMARY KEY,
-        setting_value JSON NOT NULL,
-        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      )
-    `)
-    await this.pool.query("INSERT IGNORE INTO schema_migrations(version) VALUES ('002-app-settings')")
+    const migrationsDirectory = path.resolve(process.cwd(), 'database', 'migrations')
+    const files = (await fs.readdir(migrationsDirectory)).filter(file => /^\d+_[a-z0-9-]+\.sql$/.test(file)).sort()
+    for (const file of files) {
+      const version = file.slice(0, file.indexOf('_'))
+      const [rows] = await this.pool.query<RowDataPacket[]>('SELECT version FROM schema_migrations WHERE version = ?', [version])
+      if (rows.length) continue
+      const sql = await fs.readFile(path.join(migrationsDirectory, file), 'utf8')
+      const connection = await this.pool.getConnection()
+      try {
+        await connection.beginTransaction()
+        await connection.query(sql)
+        await connection.execute('INSERT INTO schema_migrations(version) VALUES (?)', [version])
+        await connection.commit()
+      } catch (error) {
+        await connection.rollback()
+        throw new Error(`Migration ${file} failed: ${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        connection.release()
+      }
+    }
     await this.pool.query('SELECT 1')
   }
 
@@ -184,6 +206,40 @@ class MySqlRepository implements MonitorRepository {
     )
   }
 
+  async saveState(devices: Device[], alerts: Alert[]) {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      for (const device of devices) {
+        await connection.execute(
+          `INSERT INTO devices(id, name, ip_address, hostname, type, location, monitoring_interval, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE name=VALUES(name), ip_address=VALUES(ip_address), hostname=VALUES(hostname), type=VALUES(type), location=VALUES(location), monitoring_interval=VALUES(monitoring_interval), status=VALUES(status)`,
+          [device.id, device.name, device.address || null, device.address || null, device.type, device.location, device.monitoringInterval, device.status]
+        )
+        await connection.execute(
+          `INSERT INTO network_metrics(device_id, timestamp, latency_ms, packet_loss_percent, download_mbps, upload_mbps, availability_percent, error_count, response_time_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [device.id, new Date(device.latest.timestamp), device.latest.latencyMs, device.latest.packetLossPercent, device.latest.downloadMbps, device.latest.uploadMbps, device.latest.availabilityPercent, device.latest.errorCount, device.latest.responseTimeMs]
+        )
+      }
+      for (const alert of alerts) {
+        await connection.execute(
+          `INSERT INTO alerts(id, device_id, metric, value, threshold, severity, message, status, created_at, resolved_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE value=VALUES(value), threshold=VALUES(threshold), severity=VALUES(severity), message=VALUES(message), status=VALUES(status), resolved_at=IF(VALUES(status) = 'resolved', COALESCE(resolved_at, CURRENT_TIMESTAMP), NULL)`,
+          [alert.id, alert.deviceId, alert.metric, alert.value, alert.threshold, alert.severity, alert.message, alert.status, new Date(alert.createdAt), null]
+        )
+      }
+      await connection.commit()
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
   async saveLog(deviceId: number, result: 'success' | 'failure', responseTime: number | null, errorMessage?: string) {
     await this.pool.execute(
       'INSERT INTO monitoring_logs(device_id, timestamp, check_type, result, response_time, error_message) VALUES (?, ?, ?, ?, ?, ?)',
@@ -202,6 +258,21 @@ class MySqlRepository implements MonitorRepository {
       `INSERT INTO users(name, email, password, role) VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE name=VALUES(name), password=VALUES(password), role=VALUES(role)`,
       [user.name, user.email.toLowerCase(), user.passwordHash, user.role]
+    )
+  }
+
+  async loadSettings() {
+    const [rows] = await this.pool.query<RowDataPacket[]>('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', ['application'])
+    const value = rows[0]?.setting_value
+    if (!value) return null
+    return typeof value === 'string' ? JSON.parse(value) as Partial<AppSettings> : value as Partial<AppSettings>
+  }
+
+  async saveSettings(settings: AppSettings) {
+    await this.pool.execute(
+      `INSERT INTO app_settings(setting_key, setting_value) VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)`,
+      ['application', JSON.stringify(settings)]
     )
   }
 }

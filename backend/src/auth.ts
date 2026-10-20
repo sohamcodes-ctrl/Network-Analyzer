@@ -18,6 +18,10 @@ type JwtClaims = {
   role: UserRole
 }
 
+const tokenIssuer = process.env.JWT_ISSUER || 'network-analyzer'
+const tokenAudience = process.env.JWT_AUDIENCE || 'network-analyzer-client'
+const weakPasswords = new Set(['admin123', 'change-this-development-password', 'password', 'password123'])
+
 const claimsSchema = z.object({
   id: z.string().min(1),
   email: z.string().email(),
@@ -27,13 +31,24 @@ const claimsSchema = z.object({
 
 const getSecret = () => {
   const secret = process.env.JWT_SECRET?.trim()
-  if (!secret && process.env.NODE_ENV === 'production') {
-    throw new Error('JWT_SECRET must be configured in production')
-  }
-  return secret || 'development-only-change-me'
+  if (!secret) throw new Error('JWT_SECRET must be configured')
+  if (secret.length < 32 || weakPasswords.has(secret)) throw new Error('JWT_SECRET must be at least 32 characters and not a known development value')
+  return secret
 }
 
-export const issueToken = (user: AuthUser) => jwt.sign(user, getSecret(), { expiresIn: '8h' })
+export const validateAuthConfig = () => {
+  const adminEmail = process.env.ADMIN_EMAIL?.trim()
+  const adminPassword = process.env.ADMIN_PASSWORD
+  if (!adminEmail || !z.string().email().safeParse(adminEmail).success) throw new Error('ADMIN_EMAIL must be configured with a valid email address')
+  if (!adminPassword || adminPassword.length < 12 || weakPasswords.has(adminPassword)) throw new Error('ADMIN_PASSWORD must be at least 12 characters and not a known development value')
+  getSecret()
+}
+
+export const issueToken = (user: AuthUser) => jwt.sign(user, getSecret(), {
+  expiresIn: '1h',
+  issuer: tokenIssuer,
+  audience: tokenAudience
+})
 
 export const authenticate = (req: Request, res: Response, next: NextFunction) => {
   const header = req.header('authorization')
@@ -44,7 +59,7 @@ export const authenticate = (req: Request, res: Response, next: NextFunction) =>
   }
 
   try {
-    const claims = claimsSchema.parse(jwt.verify(token, getSecret()))
+    const claims = claimsSchema.parse(jwt.verify(token, getSecret(), { issuer: tokenIssuer, audience: tokenAudience }))
     req.user = claims
     next()
   } catch {

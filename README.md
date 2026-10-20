@@ -8,7 +8,7 @@ A full-stack academic network-monitoring project that makes network performance 
 - Express + TypeScript REST API with live Windows ping checks, local interface traffic measurement, optional simulation, a 30-second monitoring cycle, KPI aggregation, health score, alert evaluation, and on-demand checks.
 - Statistics: mean, median, variance, standard deviation, coefficient of variation, P25/P50/P75/P90/P95/P99, moving average, trend, Pearson correlation, and Z-score/IQR anomalies.
 - MySQL schema including indexed `network_metrics`, users, devices, alerts, alert rules, and monitoring logs; a seven-day seed script is included.
-- Authentication uses bcrypt-backed bootstrap credentials and JWT bearer tokens. Development defaults to `admin@network.local` / `admin123`; set `ADMIN_EMAIL`, `ADMIN_PASSWORD`, and a strong `JWT_SECRET` before use outside local development. Optional viewer credentials can be configured with `VIEWER_EMAIL` and `VIEWER_PASSWORD`.
+- Authentication uses bcrypt-backed bootstrap credentials and JWT bearer tokens. `ADMIN_EMAIL`, `ADMIN_PASSWORD`, and a randomly generated `JWT_SECRET` of at least 32 characters are required at startup. Optional viewer credentials can be configured with `VIEWER_EMAIL` and `VIEWER_PASSWORD`.
 
 ## Architecture
 
@@ -17,16 +17,16 @@ React client → REST API → Express monitoring service → live Windows ICMP p
                          └──────────────────────────→ MySQL historical data
 ```
 
-The browser accesses only the API. Login is required for all API routes except `/api/auth/login`; administrator credentials are required for device creation, alert changes, simulation runs, and settings changes. The current session token is held in browser session storage and expires after eight hours. Monitoring state is still in memory; MySQL persistence is planned for the next phase.
+The browser accesses only the API. Login is required for all API routes except `/api/auth/login`; administrator credentials are required for device creation, alert changes, simulation runs, and settings changes. The current session token is held in browser session storage and expires after one hour. Monitoring state is held in memory when persistence is disabled and is restored from MySQL when `DB_ENABLED=true`.
 
 ## Run locally
 
-1. Copy `.env.example` to `.env`, set a strong `JWT_SECRET` and non-default `ADMIN_PASSWORD`, and change `MONITORED_TARGETS` to IP addresses or hostnames you are authorized to monitor. For example: `192.168.1.1,192.168.1.10,google.com`.
+1. Copy `.env.example` to `.env`, generate a strong secret (for example, `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`), set a unique `ADMIN_PASSWORD`, and configure `MONITORING_ALLOWED_CIDRS` or `MONITORING_ALLOWED_HOSTNAMES` for systems you are authorized to monitor. Public targets require `ALLOW_PUBLIC_TARGETS=true`; loopback requires `ALLOW_LOOPBACK_TARGETS=true`.
 2. Run `npm install` in the project root.
 3. Run `npm run dev`.
 4. Open `http://localhost:5173`.
 
-The backend is available at `http://localhost:4000`. Live Mode is the default (`SIMULATION_MODE=false`); it monitors `127.0.0.1` if no targets are configured. Set `SIMULATION_MODE=true` for the built-in demo scenario. To create the database, run `mysql -u root -p < database/schema.sql` then `mysql -u root -p < database/seed.sql`.
+The backend is available at `http://localhost:4000`. Live Mode is the default (`SIMULATION_MODE=false`). Set `SIMULATION_MODE=true` for the built-in demo scenario. For a new MySQL database, create the database and run `database/schema.sql`; application startup then applies ordered files in `database/migrations/`. The migration runner records each applied version and is safe to rerun. Seed data can be loaded with `mysql -u root -p < database/seed.sql`.
 
 ## Key API endpoints
 
@@ -41,6 +41,10 @@ The backend is available at `http://localhost:4000`. Live Mode is the default (`
 | Reports | `GET /api/reports/daily`; `GET /api/reports/weekly` |
 
 All endpoints except `POST /api/auth/login` require `Authorization: Bearer <token>`. The login limiter allows five attempts per IP/email key within fifteen minutes. The current bootstrap users are environment-based; database-backed users will be introduced with persistence.
+
+Process health is available at `GET /health`; `GET /ready` reports whether initialization has completed and identifies the active persistence mode. Responses include an `x-request-id` header for operational tracing.
+
+When MySQL persistence is enabled, application settings are stored in `app_settings` and take precedence over the local configuration file. Settings changes update the scheduler interval, alert latency threshold, and monitoring mode without leaving the previous scheduler or hotspot capture running.
 
 ## Health and anomaly formulas
 
@@ -62,8 +66,8 @@ When Windows Mobile Hotspot is enabled, the **Hotspot client traffic** panel ide
 
 ## Security notes
 
-- Never use the development password or JWT fallback in production. Production startup fails when `JWT_SECRET` or `ADMIN_PASSWORD` is missing.
-- Only monitor systems you own or are authorized to test. Target allowlisting and stronger SSRF protections will be added with the live monitoring repository work.
+- Never commit secrets. Startup fails when authentication configuration is missing or weak.
+- Only monitor systems you own or are authorized to test. Targets are resolved before probing and must match the configured CIDR/hostname policy; loopback, multicast, link-local, broadcast, and cloud metadata addresses are blocked by default.
 - Logs contain request method, path, status, and a generic error message; passwords, tokens, and request bodies are not logged.
 
 ## Future scope
