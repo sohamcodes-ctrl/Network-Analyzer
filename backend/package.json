@@ -17,7 +17,7 @@
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.12.0",
     "network-speed": "^2.1.1",
-    "zod": "^3.24.1"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

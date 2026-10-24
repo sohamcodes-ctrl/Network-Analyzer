@@ -46,6 +46,10 @@ Process health is available at `GET /health`; `GET /ready` reports whether initi
 
 When MySQL persistence is enabled, application settings are stored in `app_settings` and take precedence over the local configuration file. Settings changes update the scheduler interval, alert latency threshold, and monitoring mode without leaving the previous scheduler or hotspot capture running.
 
+## Continuous integration
+
+The GitHub Actions workflow runs from a clean checkout and performs dependency installation, backend tests, TypeScript/frontend and backend builds, and a high-severity dependency audit. A failed audit blocks the workflow so dependency advisories are reviewed before release.
+
 ## Health and anomaly formulas
 
 `health = availability×0.30 + latency×0.20 + packet-loss×0.20 + bandwidth×0.20 + errors×0.10`.
