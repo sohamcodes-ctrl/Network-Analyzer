@@ -33,7 +33,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
       <form onSubmit={submit}>
         <label>Email address<input type="email" value={email} onChange={event => setEmail(event.target.value)} autoComplete="username" required /></label>
         <label>Password<input type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" required /></label>
-        {error && <p className="form-error">{error}</p>}
+        {error && <p className="form-error" role="alert">{error}</p>}
         <button className="primary login-submit" disabled={submitting}><LockKeyhole size={16} />{submitting ? 'Signing in...' : 'Sign in'}</button>
       </form>
     </section>

@@ -50,7 +50,7 @@ export const api = {
   addDevice: (body: Partial<Device>) => request<Device>('/devices', { method: 'POST', body: JSON.stringify(body) }),
   metrics: (id: number) => request<Metric[]>(`/monitoring/${id}`),
   check: (id: number) => request<Metric>(`/monitoring/check/${id}`, { method: 'POST' }),
-  statistics: (id: number, metric = 'latencyMs', method = 'zscore') => request<Statistics>(`/analytics/${id}/statistics?metric=${metric}&method=${method}`),
+  statistics: (id: number, metric = 'latencyMs', method = 'zscore', signal?: AbortSignal) => request<Statistics>(`/analytics/${id}/statistics?metric=${metric}&method=${method}`, { signal }),
   alerts: () => request<Alert[]>('/alerts'),
   updateAlert: (id: number, action: 'acknowledge' | 'resolve') => request<Alert>(`/alerts/${id}/${action}`, { method: 'PUT' }),
   scenario: () => request<Dashboard>('/simulation/run', { method: 'POST' }),
